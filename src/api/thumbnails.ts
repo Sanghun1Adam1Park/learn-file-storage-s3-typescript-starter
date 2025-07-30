@@ -1,11 +1,11 @@
 import { getBearerToken, validateJWT } from "../auth";
+import { getAssetDiskPath, getAssetURL, mediaTypeToExt } from "./assets";
 import { respondWithJSON } from "./json";
 import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
-
-const MAX_UPLOAD_SIZE = 10 * Math.pow(2, 20); // Since in MB. 
+import { randomBytes } from "crypto";
 
 export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const { videoId } = req.params as { videoId?: string };
@@ -16,35 +16,43 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const token = getBearerToken(req.headers);
   const userID = validateJWT(token, cfg.jwtSecret);
 
-  console.log("uploading thumbnail for video", videoId, "by user", userID);
-
-  const data = await req.formData();
-  const thumbnail = data.get("thumbnail"); 
-
-  if (!(thumbnail instanceof File)) {
-    throw new BadRequestError("Image data is not a file.");
+  const video = getVideo(cfg.db, videoId);
+  if (!video) {
+    throw new NotFoundError("Couldn't find video");
+  }
+  if (video.userID !== userID) {
+    throw new UserForbiddenError("Not authorized to update this video");
   }
 
-  if (thumbnail.size > MAX_UPLOAD_SIZE) {
-    throw new BadRequestError("Image size too big.");
+  const formData = await req.formData();
+  const file = formData.get("thumbnail");
+  if (!(file instanceof File)) {
+    throw new BadRequestError("Thumbnail file missing");
   }
 
-  const mediaType = thumbnail.type;
-  const thumbnailData = await thumbnail.arrayBuffer();
-  const videoMetaData = getVideo(cfg.db, videoId);
-  const encodedThumbnailData = Buffer.from(thumbnailData).toString("base64");
-  const dataURL = `data:${mediaType};base64,${encodedThumbnailData}`;
+  const MAX_UPLOAD_SIZE = 10 << 20;
 
-  if (!videoMetaData) {
-    throw new NotFoundError("Vidoe does not exist");
+  if (file.size > MAX_UPLOAD_SIZE) {
+    throw new BadRequestError(
+      `Thumbnail file exceeds the maximum allowed size of 10MB`,
+    );
   }
 
-  if (videoMetaData.userID != userID) {
-    throw new UserForbiddenError("Not the owner of the video");
+  const mediaType = file.type;
+  if (mediaType !== "image/jpeg" && mediaType !== "image/png") {
+    throw new BadRequestError("Invalid file type. Only JPEG or PNG allowed.");
   }
 
-  videoMetaData.thumbnailURL = dataURL; 
-  updateVideo(cfg.db, videoMetaData); 
+  const ext = mediaTypeToExt(mediaType);
+  const randomFilename = randomBytes(32).toString("base64url"); 
+  const filename = `${randomFilename}${ext}`;
 
-  return respondWithJSON(200, videoMetaData);
+  const assetDiskPath = getAssetDiskPath(cfg, filename);
+  await Bun.write(assetDiskPath, file);
+
+  const urlPath = getAssetURL(cfg, filename);
+  video.thumbnailURL = urlPath;
+  updateVideo(cfg.db, video);
+
+  return respondWithJSON(200, null);
 }
