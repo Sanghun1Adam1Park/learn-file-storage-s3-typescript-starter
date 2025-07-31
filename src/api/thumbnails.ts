@@ -26,7 +26,7 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
 
   const formData = await req.formData();
   const file = formData.get("thumbnail");
-  if (!(file instanceof File)) {
+  if (!(file instanceof Blob)) {
     throw new BadRequestError("Thumbnail file missing");
   }
 
